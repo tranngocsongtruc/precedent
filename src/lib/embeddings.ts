@@ -3,7 +3,13 @@
 // Set EMBEDDINGS_BACKEND=voyage + VOYAGE_API_KEY to swap to Voyage AI.
 import { env } from "./env";
 
-export const EMBED_DIM = 384;
+// Dimension depends on the active backend. Read lazily (a function, not a const)
+// because standalone scripts call loadEnv() *after* imports are hoisted.
+//   local  (all-MiniLM-L6-v2) -> 384
+//   voyage (voyage-3-lite)    -> 512
+export function embedDim(): number {
+  return env.embeddingsBackend() === "voyage" ? 512 : 384;
+}
 
 // Lazily-initialized local pipeline (model weights download once, then cached).
 let localPipe: Promise<(text: string, opts: unknown) => Promise<{ data: Float32Array }>> | null =

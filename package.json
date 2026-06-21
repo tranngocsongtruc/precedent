@@ -11,7 +11,8 @@
     "start": "next start",
     "lint": "next lint",
     "seed": "tsx scripts/seed.ts",
-    "redis:init": "tsx scripts/initRedis.ts"
+    "redis:init": "tsx scripts/initRedis.ts",
+    "redis:reset": "tsx scripts/resetRedis.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

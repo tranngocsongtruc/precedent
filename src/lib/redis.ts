@@ -10,11 +10,12 @@ import {
   type RedisClientType,
 } from "redis";
 import { redisUrl } from "./env";
-import { EMBED_DIM, toVectorBlob } from "./embeddings";
+import { embedDim, toVectorBlob } from "./embeddings";
 import type { DecisionNode, GraphPayload, PrecedentHit } from "./types";
 
 export const DECISION_PREFIX = "decision:";
 export const DECISION_INDEX = "idx:decisions";
+const DIM_META_KEY = "meta:embed_dim";
 
 let clientPromise: Promise<RedisClientType> | null = null;
 
@@ -30,14 +31,32 @@ export async function redis(): Promise<RedisClientType> {
   return clientPromise;
 }
 
-/** Create the vector + tag index if it doesn't already exist. Idempotent. */
+/**
+ * Create the vector + tag index if needed. Idempotent, and self-heals when the
+ * embedding dimension changes (e.g. switching local↔Voyage): if the index was
+ * built for a different DIM, it's dropped and recreated. Note: existing decision
+ * docs still hold old-dimension vectors, so a backend switch also needs a
+ * re-seed (`npm run redis:reset && npm run seed`).
+ */
 export async function ensureIndex(): Promise<void> {
   const c = await redis();
+  const dim = embedDim();
+
+  let exists = true;
   try {
     await c.ft.info(DECISION_INDEX);
-    return; // already exists
   } catch {
-    // not found -> create below
+    exists = false;
+  }
+  const builtDim = await c.get(DIM_META_KEY);
+  if (exists && builtDim && Number(builtDim) === dim) return; // up to date
+
+  if (exists) {
+    try {
+      await c.ft.dropIndex(DECISION_INDEX);
+    } catch {
+      /* ignore */
+    }
   }
   await c.ft.create(
     DECISION_INDEX,
@@ -46,7 +65,7 @@ export async function ensureIndex(): Promise<void> {
         type: SchemaFieldTypes.VECTOR,
         ALGORITHM: VectorAlgorithms.FLAT,
         TYPE: "FLOAT32",
-        DIM: EMBED_DIM,
+        DIM: dim,
         DISTANCE_METRIC: "COSINE",
         AS: "embedding",
       },
@@ -57,6 +76,7 @@ export async function ensureIndex(): Promise<void> {
     },
     { ON: "JSON", PREFIX: DECISION_PREFIX }
   );
+  await c.set(DIM_META_KEY, String(dim));
 }
 
 export async function saveDecision(node: DecisionNode): Promise<void> {
