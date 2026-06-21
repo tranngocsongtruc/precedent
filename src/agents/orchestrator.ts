@@ -83,8 +83,8 @@ export async function runDecision(
 
   // One root span groups all five agents into a single Arize trace tree.
   try {
-    return await withSpan("precedent.decision", "AGENT", { "rep.name": requestedBy }, async () =>
-      runDecisionTraced(rawText, requestedBy, emit)
+    return await withSpan("precedent.decision", "AGENT", { "rep.name": requestedBy }, async (root) =>
+      runDecisionTraced(rawText, requestedBy, emit, root)
     );
   } finally {
     // Push spans to Arize now — don't wait for the batch timer (which never
@@ -96,7 +96,8 @@ export async function runDecision(
 async function runDecisionTraced(
   rawText: string,
   requestedBy: string,
-  emit?: Emit
+  emit?: Emit,
+  root?: import("@opentelemetry/api").Span
 ): Promise<DecisionResult> {
   const trace: TraceStep[] = [];
 
@@ -272,6 +273,19 @@ async function runDecisionTraced(
     approver: routing.approverName,
     recommendation,
   });
+
+  // Enrich the root span so each Arize trace is a meaningful, filterable record
+  // that ties the decision to its evaluation (and the before→after if refined).
+  root?.setAttribute("input.value", rawText);
+  root?.setAttribute("output.value", recommendation);
+  root?.setAttribute("decision.account", request.account);
+  root?.setAttribute("decision.ask", `${request.askValue}${request.askUnit} ${request.askType}`);
+  root?.setAttribute("decision.status", status);
+  root?.setAttribute("decision.approver", routing.approverName);
+  root?.setAttribute("decision.precedents", precedent.relevant.length);
+  root?.setAttribute("eval.score", evaluation.score);
+  root?.setAttribute("eval.label", evaluation.label);
+  root?.setAttribute("decision.refined", refined);
 
   // Summary of which systems actually fired, for the UI's "systems engaged" panel.
   const integrations: Integrations = {
