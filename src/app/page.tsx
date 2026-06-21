@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
+import { motion, AnimatePresence } from "framer-motion";
+import VoiceButton from "@/components/VoiceButton";
+import ThemeToggle from "@/components/ThemeToggle";
 import type { DecisionNode, GraphPayload, TraceStep } from "@/lib/types";
 
-import VoiceButton from "@/components/VoiceButton";
-
-// React Flow must be client-only.
 const DecisionGraph = dynamic(() => import("@/components/DecisionGraph"), { ssr: false });
 
 const EXAMPLE =
@@ -21,11 +21,11 @@ const AGENT_LABEL: Record<TraceStep["agent"], string> = {
   "approver-router": "Approver Router",
 };
 
-const STATUS_COLOR: Record<string, string> = {
-  approved: "text-approve border-approve",
-  denied: "text-deny border-deny",
-  pending: "text-pending border-pending",
-  escalated: "text-[#a78bfa] border-[#a78bfa]",
+const STATUS_RING: Record<string, string> = {
+  approved: "text-approve border-approve/60",
+  denied: "text-deny border-deny/60",
+  pending: "text-pending border-pending/60",
+  escalated: "text-escalate border-escalate/60",
 };
 
 export default function Home() {
@@ -71,72 +71,87 @@ export default function Home() {
     }
   };
 
+  const decisionCount = graph.nodes.filter((n) => n.type === "decision").length;
+
   return (
-    <main className="flex h-screen flex-col">
-      <header className="flex items-center justify-between border-b border-edge px-6 py-3">
-        <div>
-          <h1 className="text-lg font-bold tracking-tight">
+    <main className="flex h-screen flex-col bg-bg">
+      <header className="flex items-center justify-between border-b border-border px-6 py-3">
+        <div className="flex items-baseline gap-3">
+          <h1 className="font-display text-[19px] font-semibold tracking-tight text-fg">
             Precedent <span className="text-accent">⟁</span>
           </h1>
-          <p className="text-[11px] text-zinc-500">
-            A context graph for enterprise decision traces
-          </p>
+          <p className="hidden text-[12px] text-faint sm:block">a context graph for enterprise decisions</p>
         </div>
-        <div className="text-right text-[11px] text-zinc-500">
-          Claude · Redis Vector · Agent Memory · LangCache
+        <div className="flex items-center gap-4">
+          <span className="hidden font-mono text-[10.5px] uppercase tracking-wider text-faint md:block">
+            Claude · Redis Vector · Agent Memory · LangCache · Arize · Band
+          </span>
+          <ThemeToggle />
         </div>
       </header>
 
-      <div className="grid flex-1 grid-cols-[420px_1fr] overflow-hidden">
+      <div className="grid flex-1 grid-cols-[440px_1fr] overflow-hidden">
         {/* Left: intake + trace */}
-        <section className="flex flex-col overflow-y-auto border-r border-edge p-4">
-          <label className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">
-            Requested by
-          </label>
-          <input
-            value={requestedBy}
-            onChange={(e) => setRequestedBy(e.target.value)}
-            className="mb-3 rounded border border-edge bg-panel px-2 py-1.5 text-sm outline-none focus:border-accent"
-          />
-          <div className="mb-1 flex items-center justify-between">
-            <label className="text-[11px] uppercase tracking-wide text-zinc-500">
-              The ask (what the rep said)
-            </label>
-            <VoiceButton
-              onFinal={(t) => {
-                setText((prev) => (prev ? `${prev} ${t}` : t).trim());
-                setInterim("");
-              }}
-              onInterim={setInterim}
+        <section className="flex flex-col gap-3 overflow-y-auto border-r border-border p-5">
+          <Field label="Requested by">
+            <input
+              value={requestedBy}
+              onChange={(e) => setRequestedBy(e.target.value)}
+              className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-fg outline-none transition-colors focus:border-accent"
+            />
+          </Field>
+
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="font-mono text-[10.5px] uppercase tracking-wider text-faint">The ask</span>
+              <VoiceButton
+                onFinal={(t) => {
+                  setText((prev) => (prev ? `${prev} ${t}` : t).trim());
+                  setInterim("");
+                }}
+                onInterim={setInterim}
+              />
+            </div>
+            <textarea
+              value={interim ? `${text} ${interim}`.trim() : text}
+              onChange={(e) => setText(e.target.value)}
+              rows={5}
+              className="w-full resize-none rounded-lg border border-border bg-surface px-3 py-2.5 text-sm leading-relaxed text-fg outline-none transition-colors focus:border-accent"
             />
           </div>
-          <textarea
-            value={interim ? `${text} ${interim}`.trim() : text}
-            onChange={(e) => setText(e.target.value)}
-            rows={5}
-            className="mb-3 resize-none rounded border border-edge bg-panel px-2 py-1.5 text-sm leading-relaxed outline-none focus:border-accent"
-          />
-          <button
+
+          <motion.button
             onClick={run}
             disabled={running}
-            className="mb-4 rounded bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+            whileHover={{ scale: running ? 1 : 1.01 }}
+            whileTap={{ scale: running ? 1 : 0.99 }}
+            className="rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-white shadow-glow transition-opacity disabled:opacity-60"
           >
-            {running ? "Running 5-agent trace…" : "Capture decision →"}
-          </button>
+            {running ? <RunningLabel /> : "Capture decision  →"}
+          </motion.button>
 
-          {error && (
-            <div className="mb-4 rounded border border-deny bg-deny/10 px-3 py-2 text-xs text-deny">
-              {error}
-            </div>
-          )}
+          <AnimatePresence>
+            {error && (
+              <motion.div
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="rounded-lg border border-deny/50 bg-deny/10 px-3 py-2 text-xs text-deny"
+              >
+                {error}
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-          {node && <DecisionDetail node={node} />}
+          <AnimatePresence mode="wait">
+            {node && <DecisionDetail key={node.id} node={node} />}
+          </AnimatePresence>
         </section>
 
-        {/* Right: the context graph */}
-        <section className="relative">
-          <div className="absolute left-4 top-3 z-10 text-[11px] uppercase tracking-wide text-zinc-500">
-            Decision lineage · {graph.nodes.filter((n) => n.type === "decision").length} decisions
+        {/* Right: the graph */}
+        <section className="relative bg-bg">
+          <div className="pointer-events-none absolute left-5 top-4 z-10 font-mono text-[10.5px] uppercase tracking-wider text-faint">
+            Decision lineage · {decisionCount} decisions
           </div>
           <DecisionGraph payload={graph} />
         </section>
@@ -144,6 +159,42 @@ export default function Home() {
     </main>
   );
 }
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block font-mono text-[10.5px] uppercase tracking-wider text-faint">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function RunningLabel() {
+  return (
+    <span className="inline-flex items-center gap-2">
+      Running 5-agent trace
+      <span className="inline-flex gap-1">
+        {[0, 1, 2].map((i) => (
+          <motion.span
+            key={i}
+            className="inline-block h-1 w-1 rounded-full bg-white"
+            animate={{ opacity: [0.3, 1, 0.3] }}
+            transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }}
+          />
+        ))}
+      </span>
+    </span>
+  );
+}
+
+const container = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.07 } },
+};
+const item = {
+  hidden: { opacity: 0, y: 8 },
+  show: { opacity: 1, y: 0 },
+};
 
 function DecisionDetail({ node }: { node: DecisionNode }) {
   const [durable, setDurable] = useState<string | null>(null);
@@ -163,84 +214,71 @@ function DecisionDetail({ node }: { node: DecisionNode }) {
         }),
       });
       const json = await res.json();
-      setDurable(
-        res.ok
-          ? `Parked as durable approval → ${json.approver}. ${json.coordination ?? ""}`
-          : json.error ?? "Durable sidecar unavailable"
-      );
+      setDurable(res.ok ? `Parked as durable approval → ${json.approver}.` : json.error ?? "Sidecar unavailable");
     } catch {
-      setDurable("Durable sidecar unavailable");
+      setDurable("Sidecar unavailable");
     } finally {
       setSending(false);
     }
   };
 
   return (
-    <div className="space-y-4">
-      <div className={`rounded border bg-panel p-3 ${STATUS_COLOR[node.status]}`}>
-        <div className="text-[10px] uppercase tracking-wide opacity-70">Recommendation</div>
-        <div className="mt-0.5 text-[12px] font-bold uppercase">{node.status}</div>
-        <p className="mt-1 text-sm leading-relaxed text-zinc-200">{node.recommendation}</p>
-        <div className="mt-2 text-[11px] text-zinc-400">→ {node.routing.approverName}</div>
+    <motion.div variants={container} initial="hidden" animate="show" className="flex flex-col gap-3">
+      <motion.div variants={item} className={`rounded-xl border bg-surface p-3.5 shadow-panel ${STATUS_RING[node.status]}`}>
+        <div className="font-mono text-[10px] uppercase tracking-wider opacity-60">Recommendation</div>
+        <div className="mt-0.5 font-display text-[13px] font-bold uppercase tracking-wide">{node.status}</div>
+        <p className="mt-1.5 text-[13px] leading-relaxed text-fg/90">{node.recommendation}</p>
+        <div className="mt-2 font-mono text-[11px] text-muted">→ {node.routing.approverName}</div>
         {node.status === "pending" && (
           <button
             onClick={sendForApproval}
             disabled={sending}
-            className="mt-2 rounded border border-edge px-2 py-1 text-[11px] text-zinc-300 hover:border-accent disabled:opacity-50"
+            className="mt-2.5 rounded-md border border-border px-2.5 py-1 text-[11px] text-muted transition-colors hover:border-accent hover:text-fg disabled:opacity-50"
           >
             {sending ? "Routing…" : "Send for durable approval (AgentSpan)"}
           </button>
         )}
-        {durable && <p className="mt-2 text-[11px] text-zinc-400">{durable}</p>}
-      </div>
+        {durable && <p className="mt-2 font-mono text-[11px] text-faint">{durable}</p>}
+      </motion.div>
 
-      <div>
-        <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">
-          Agent reasoning trace
-        </div>
-        <ol className="space-y-2">
+      <motion.div variants={item}>
+        <div className="mb-1.5 font-mono text-[10.5px] uppercase tracking-wider text-faint">Agent reasoning trace</div>
+        <ol className="flex flex-col gap-2">
           {node.trace.map((s, i) => (
-            <li key={i} className="rounded border border-edge bg-panel p-2">
+            <motion.li variants={item} key={i} className="rounded-lg border border-border bg-surface p-2.5">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-semibold text-accent">
-                  {AGENT_LABEL[s.agent]}
-                </span>
-                <span className="text-[10px] text-zinc-600">{s.title}</span>
+                <span className="font-mono text-[11px] font-semibold text-accent">{AGENT_LABEL[s.agent]}</span>
+                <span className="font-mono text-[10px] text-faint">{s.title}</span>
               </div>
-              <p className="mt-1 text-[12px] leading-snug text-zinc-300">{s.detail}</p>
-            </li>
+              <p className="mt-1 text-[12px] leading-snug text-muted">{s.detail}</p>
+            </motion.li>
           ))}
         </ol>
-      </div>
+      </motion.div>
 
       {node.precedents.length > 0 && (
-        <div>
-          <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">
-            Cited precedent
-          </div>
-          <ul className="space-y-1">
+        <motion.div variants={item}>
+          <div className="mb-1.5 font-mono text-[10.5px] uppercase tracking-wider text-faint">Cited precedent</div>
+          <ul className="flex flex-col gap-1.5">
             {node.precedents.map((p) => (
-              <li key={p.decisionId} className="rounded border border-edge bg-panel px-2 py-1.5 text-[12px]">
-                <span className="text-zinc-200">
-                  {p.account} · {p.askValue}% {p.askType}
-                </span>{" "}
-                <span className="text-zinc-500">→ {p.outcome}</span>
-                <span className="float-right text-zinc-600">sim {p.score.toFixed(2)}</span>
+              <li key={p.decisionId} className="flex items-center justify-between rounded-lg border border-border bg-surface px-2.5 py-1.5 text-[12px]">
+                <span className="text-fg/90">
+                  {p.account} · {p.askValue}% {p.askType} <span className="text-faint">→ {p.outcome}</span>
+                </span>
+                <span className="font-mono text-[11px] text-faint">sim {p.score.toFixed(2)}</span>
               </li>
             ))}
           </ul>
-        </div>
+        </motion.div>
       )}
 
-      <div>
-        <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">Policy</div>
-        <div className="rounded border border-edge bg-panel p-2 text-[12px] text-zinc-300">
+      <motion.div variants={item}>
+        <div className="mb-1.5 font-mono text-[10.5px] uppercase tracking-wider text-faint">Policy</div>
+        <div className="rounded-lg border border-border bg-surface p-2.5 text-[12px] text-muted">
           {node.policy.reasoning}
-          <div className="mt-1 text-[11px] text-zinc-500">
-            Rules: {node.policy.citedRules.join(", ") || "—"}
-          </div>
+          <div className="mt-1 font-mono text-[11px] text-faint">Rules: {node.policy.citedRules.join(", ") || "—"}</div>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }

@@ -98,10 +98,10 @@ export default function VoiceButton({
       <button
         type="button"
         onClick={recording ? stop : start}
-        className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-semibold transition ${
+        className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
           recording
             ? "bg-deny text-white"
-            : "border border-edge bg-panel text-zinc-300 hover:border-accent"
+            : "border border-border bg-surface text-muted hover:border-accent hover:text-fg"
         }`}
       >
         <span className={recording ? "animate-pulse" : ""}>●</span>
