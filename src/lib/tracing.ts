@@ -27,35 +27,44 @@ export async function initTracing(): Promise<void> {
   const cfg = env.arize();
   if (!cfg) return; // tracing disabled
 
-  // Surface OTLP export errors (otherwise failures are silent → "no traces").
-  diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.ERROR);
+  // Fail-soft: a bad ARIZE_OTLP_ENDPOINT / setup error must NEVER break a
+  // decision. Worst case, tracing is silently off and the app runs normally.
+  try {
+    // Surface OTLP export errors (otherwise failures are silent → "no traces").
+    diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.ERROR);
 
-  // Dynamic imports keep these node-only packages out of any client bundle.
-  const { NodeTracerProvider, BatchSpanProcessor } = await import(
-    "@opentelemetry/sdk-trace-node"
-  );
-  const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-proto");
-  const { resourceFromAttributes } = await import("@opentelemetry/resources");
-  const { ATTR_SERVICE_NAME } = await import("@opentelemetry/semantic-conventions");
+    // Dynamic imports keep these node-only packages out of any client bundle.
+    const { NodeTracerProvider, BatchSpanProcessor } = await import(
+      "@opentelemetry/sdk-trace-node"
+    );
+    const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-proto");
+    const { resourceFromAttributes } = await import("@opentelemetry/resources");
+    const { ATTR_SERVICE_NAME } = await import("@opentelemetry/semantic-conventions");
 
-  const exporter = new OTLPTraceExporter({
-    url: cfg.endpoint,
-    // Arize authenticates via these two headers.
-    headers: { space_id: cfg.spaceId, api_key: cfg.key },
-  });
+    // Validate the endpoint up front with a clear message.
+    new URL(cfg.endpoint);
 
-  const provider = new NodeTracerProvider({
-    resource: resourceFromAttributes({
-      [ATTR_SERVICE_NAME]: cfg.project,
-      // OpenInference project routing in the Arize UI.
-      "openinference.project.name": cfg.project,
-      model_id: cfg.project,
-    }),
-    spanProcessors: [new BatchSpanProcessor(exporter)],
-  });
-  provider.register();
-  providerRef = provider;
-  console.log(`[tracing] Arize OTLP tracing enabled -> ${cfg.endpoint} (project ${cfg.project})`);
+    const exporter = new OTLPTraceExporter({
+      url: cfg.endpoint,
+      // Arize authenticates via these two headers.
+      headers: { space_id: cfg.spaceId, api_key: cfg.key },
+    });
+
+    const provider = new NodeTracerProvider({
+      resource: resourceFromAttributes({
+        [ATTR_SERVICE_NAME]: cfg.project,
+        // OpenInference project routing in the Arize UI.
+        "openinference.project.name": cfg.project,
+        model_id: cfg.project,
+      }),
+      spanProcessors: [new BatchSpanProcessor(exporter)],
+    });
+    provider.register();
+    providerRef = provider;
+    console.log(`[tracing] Arize OTLP tracing enabled -> ${cfg.endpoint} (project ${cfg.project})`);
+  } catch (e) {
+    console.warn("[tracing] setup failed; continuing without tracing:", e);
+  }
 }
 
 /** Force-export any buffered spans. Call before a request/function returns. */

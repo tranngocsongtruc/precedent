@@ -2,8 +2,15 @@
 // optional integrations (LangCache, Agent Memory, Deepgram) degrade gracefully.
 
 function opt(name: string): string | undefined {
-  const v = process.env[name];
-  return v && v.trim() !== "" ? v.trim() : undefined;
+  let v = process.env[name];
+  if (!v) return undefined;
+  v = v.trim();
+  // Strip surrounding quotes — a common mistake when pasting values into the
+  // Vercel/host env UI (e.g. "redis://…") which otherwise breaks URL parsing.
+  if (v.length >= 2 && /^["'].*["']$/.test(v) && v[0] === v[v.length - 1]) {
+    v = v.slice(1, -1).trim();
+  }
+  return v === "" ? undefined : v;
 }
 
 function req(name: string): string {
