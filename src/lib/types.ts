@@ -95,6 +95,17 @@ export interface DecisionNode {
   createdAt: string;
 }
 
+/** Which sponsor systems actually fired for a decision (drives the UI panel). */
+export interface Integrations {
+  redisVectorCandidates: number;
+  langcacheHit: boolean;
+  browserbaseLive: boolean;
+  agentMemory: boolean;
+  bandRoom: string | null;
+  bandThreaded: boolean;
+  arizeTraced: boolean;
+}
+
 /** Shape returned to the graph-viz frontend. */
 export interface GraphPayload {
   nodes: GraphVizNode[];

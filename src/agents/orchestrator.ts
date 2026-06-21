@@ -9,11 +9,14 @@ import { ensureIndex, saveDecision } from "@/lib/redis";
 import { langcacheSearch, langcacheStore } from "@/lib/langcache";
 import { initTracing, withSpan } from "@/lib/tracing";
 import { bandRecordDecision } from "@/lib/band";
+import { agentMemoryEnabled } from "@/lib/agentMemory";
+import { env } from "@/lib/env";
 import { UNTRUSTED_GUARD, fenceUntrusted } from "@/lib/guard";
 import type {
   DecisionNode,
   DecisionRequest,
   DecisionStatus,
+  Integrations,
   TraceStep,
 } from "@/lib/types";
 import { gatherContext } from "./contextGatherer";
@@ -37,6 +40,7 @@ export type Emit = (step: TraceStep) => void;
 export interface DecisionResult {
   node: DecisionNode;
   brief: string;
+  integrations: Integrations;
 }
 
 /** Parse a free-form rep utterance into a structured request. */
@@ -117,10 +121,12 @@ async function runDecisionTraced(
   });
 
   // 2 — Retrieve precedent (semantic cache in front of the expensive step).
+  let langcacheHit = false;
   const precedent = await step("precedent-retriever", "Retrieved precedent", async () => {
     const cacheKey = `precedent::${request.account}::${request.askValue}${request.askUnit}::${request.askType}::${brief}`;
     const cached = await langcacheSearch(cacheKey);
     if (cached) {
+      langcacheHit = true;
       const parsed = JSON.parse(cached.response) as Awaited<ReturnType<typeof retrievePrecedents>>;
       return {
         detail: `${parsed.relevant.length} comparable (cache hit, sim ${cached.similarity.toFixed(2)})`,
@@ -194,7 +200,7 @@ async function runDecisionTraced(
   await saveDecision(node);
 
   // Mirror the outcome to Band's cross-agent audit trail (no-op if unconfigured).
-  await bandRecordDecision({
+  const band = await bandRecordDecision({
     decisionId: node.id,
     account: request.account,
     ask: `${request.askValue}${request.askUnit} ${request.askType}`,
@@ -203,5 +209,16 @@ async function runDecisionTraced(
     recommendation,
   });
 
-  return { node, brief };
+  // Summary of which systems actually fired, for the UI's "systems engaged" panel.
+  const integrations: Integrations = {
+    redisVectorCandidates: precedent.candidates.length,
+    langcacheHit,
+    browserbaseLive: context.some((c) => c.facts?.browsedVia === "browserbase"),
+    agentMemory: agentMemoryEnabled(),
+    bandRoom: band.chatId,
+    bandThreaded: band.threaded,
+    arizeTraced: env.arize() !== null,
+  };
+
+  return { node, brief, integrations };
 }

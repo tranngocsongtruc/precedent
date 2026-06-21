@@ -12,7 +12,16 @@ import { env } from "./env";
 
 const TITLE_MAX = 120; // Band chat title limit.
 
-/** Record a decision by opening a titled Band chat room for it. Returns chat id. */
+export interface BandResult {
+  chatId: string | null;
+  threaded: boolean; // true if we posted a coordinator→approver message
+}
+
+/**
+ * Record a decision: open a titled Band room for it and — if a second
+ * (approver) agent is configured — post a message @mentioning that agent, so
+ * the room becomes a real coordinator→approver coordination thread.
+ */
 export async function bandRecordDecision(args: {
   decisionId: string;
   account: string;
@@ -20,9 +29,9 @@ export async function bandRecordDecision(args: {
   status: string;
   approver: string;
   recommendation: string;
-}): Promise<string | null> {
+}): Promise<BandResult> {
   const cfg = env.band();
-  if (!cfg) return null;
+  if (!cfg) return { chatId: null, threaded: false };
   try {
     const title =
       `${args.ask} for ${args.account} → ${args.status.toUpperCase()} (${args.approver})`.slice(
@@ -36,15 +45,61 @@ export async function bandRecordDecision(args: {
     });
     if (!res.ok) {
       console.warn(`[band] create chat -> ${res.status}: ${await res.text()}`);
-      return null;
+      return { chatId: null, threaded: false };
     }
-    const json = (await res.json()) as { data?: { id?: string } };
-    const chatId = json.data?.id ?? null;
-    console.log(`[band] decision ${args.decisionId} audited as chat ${chatId} ("${title}")`);
-    return chatId;
+    const chatId = ((await res.json()) as { data?: { id?: string } }).data?.id ?? null;
+    console.log(`[band] decision ${args.decisionId} → room ${chatId} ("${title}")`);
+
+    const threaded = chatId ? await postApproverMessage(cfg, chatId, args) : false;
+    return { chatId, threaded };
   } catch (e) {
     console.warn("[band] record decision failed:", e);
-    return null;
+    return { chatId: null, threaded: false };
+  }
+}
+
+/** Post the decision into the room, @mentioning the configured approver agent. */
+async function postApproverMessage(
+  cfg: NonNullable<ReturnType<typeof env.band>>,
+  chatId: string,
+  args: { ask: string; account: string; status: string; recommendation: string }
+): Promise<boolean> {
+  if (!cfg.approverId) return false; // no second agent configured → room only
+  try {
+    // A participant must be in the room before it can be @mentioned.
+    const addRes = await fetch(`${cfg.url}/api/v1/agent/chats/${chatId}/participants`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": cfg.key },
+      body: JSON.stringify({ participant: { participant_id: cfg.approverId } }),
+    });
+    if (!addRes.ok && addRes.status !== 409) {
+      // 409 = already a participant, which is fine.
+      console.warn(`[band] add participant -> ${addRes.status}: ${await addRes.text()}`);
+    }
+
+    const handle = cfg.approverHandle ?? "@approver";
+    const content =
+      `${handle} ${args.ask} for ${args.account} → ${args.status.toUpperCase()}. ` +
+      `${args.recommendation}`;
+    const res = await fetch(`${cfg.url}/api/v1/agent/chats/${chatId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": cfg.key },
+      body: JSON.stringify({
+        message: {
+          content,
+          mentions: [{ id: cfg.approverId, handle: cfg.approverHandle }],
+        },
+      }),
+    });
+    if (!res.ok) {
+      console.warn(`[band] post message -> ${res.status}: ${await res.text()}`);
+      return false;
+    }
+    console.log(`[band] threaded decision to approver in room ${chatId}`);
+    return true;
+  } catch (e) {
+    console.warn("[band] post message failed:", e);
+    return false;
   }
 }
 

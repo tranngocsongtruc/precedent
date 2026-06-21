@@ -62,7 +62,15 @@ export const env = {
     const key = opt("BAND_API_KEY");
     const agentId = opt("BAND_AGENT_ID");
     const url = opt("BAND_REST_URL") ?? "https://app.band.ai";
-    return key && agentId ? { key, agentId, url } : null;
+    return key && agentId
+      ? {
+          key,
+          agentId,
+          url,
+          approverId: opt("BAND_APPROVER_AGENT_ID"),
+          approverHandle: opt("BAND_APPROVER_HANDLE"),
+        }
+      : null;
   },
 
   arize: () => {

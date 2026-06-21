@@ -55,20 +55,29 @@ export default function VoiceButton({
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
+      // Pick a container the browser actually supports (Safari ≠ webm).
+      const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find(
+        (m) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(m)
+      );
+      if (!mime) {
+        throw new Error("This browser can't record audio for streaming. Try Chrome.");
+      }
+
       const params = new URLSearchParams({
         model: "nova-3",
         interim_results: "true",
         smart_format: "true",
         punctuate: "true",
       });
+      // Granted JWTs authenticate with the "bearer" subprotocol (API keys use "token").
       const ws = new WebSocket(
         `wss://api.deepgram.com/v1/listen?${params.toString()}`,
-        ["token", accessToken]
+        ["bearer", accessToken]
       );
       wsRef.current = ws;
 
       ws.onopen = () => {
-        const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+        const recorder = new MediaRecorder(stream, { mimeType: mime });
         recorderRef.current = recorder;
         recorder.ondataavailable = (e) => {
           if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) ws.send(e.data);
@@ -86,7 +95,13 @@ export default function VoiceButton({
       };
 
       ws.onerror = () => setError("Voice connection error");
-      ws.onclose = () => setRecording(false);
+      ws.onclose = (e) => {
+        // Surface a useful reason instead of a generic failure.
+        if (e.code !== 1000 && e.code !== 1005) {
+          setError(`Voice closed (${e.code})${e.reason ? `: ${e.reason}` : ""}`);
+        }
+        setRecording(false);
+      };
     } catch (e) {
       setError(e instanceof Error ? e.message : "mic error");
       stop();

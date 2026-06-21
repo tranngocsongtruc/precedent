@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { motion, AnimatePresence } from "framer-motion";
 import VoiceButton from "@/components/VoiceButton";
 import ThemeToggle from "@/components/ThemeToggle";
-import type { DecisionNode, GraphPayload, TraceStep } from "@/lib/types";
+import type { DecisionNode, GraphPayload, Integrations, TraceStep } from "@/lib/types";
 
 const DecisionGraph = dynamic(() => import("@/components/DecisionGraph"), { ssr: false });
 
@@ -19,6 +19,15 @@ const AGENT_LABEL: Record<TraceStep["agent"], string> = {
   "precedent-retriever": "Precedent Retriever",
   "policy-evaluator": "Policy Evaluator",
   "approver-router": "Approver Router",
+};
+
+// What technology each agent leans on — shown as a chip under its trace step.
+const AGENT_TECH: Record<TraceStep["agent"], string[]> = {
+  orchestrator: ["Claude"],
+  "context-gatherer": ["Browserbase", "CRM/Zendesk/PagerDuty"],
+  "precedent-retriever": ["Redis Vector", "LangCache"],
+  "policy-evaluator": ["Claude"],
+  "approver-router": ["Agent Memory", "Claude"],
 };
 
 const STATUS_RING: Record<string, string> = {
@@ -35,6 +44,7 @@ export default function Home() {
   const [interim, setInterim] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [node, setNode] = useState<DecisionNode | null>(null);
+  const [integrations, setIntegrations] = useState<Integrations | null>(null);
   const [graph, setGraph] = useState<GraphPayload>({ nodes: [], edges: [] });
 
   const refreshGraph = useCallback(async () => {
@@ -63,6 +73,7 @@ export default function Home() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "decision failed");
       setNode(json.node as DecisionNode);
+      setIntegrations((json.integrations as Integrations) ?? null);
       await refreshGraph();
     } catch (e) {
       setError(e instanceof Error ? e.message : "decision failed");
@@ -125,7 +136,7 @@ export default function Home() {
             disabled={running}
             whileHover={{ scale: running ? 1 : 1.01 }}
             whileTap={{ scale: running ? 1 : 0.99 }}
-            className="rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-white shadow-glow transition-opacity disabled:opacity-60"
+            className="rounded-lg bg-cta px-4 py-2.5 text-sm font-semibold text-on-cta shadow-glow transition-opacity disabled:opacity-60"
           >
             {running ? <RunningLabel /> : "Capture decision  →"}
           </motion.button>
@@ -144,7 +155,7 @@ export default function Home() {
           </AnimatePresence>
 
           <AnimatePresence mode="wait">
-            {node && <DecisionDetail key={node.id} node={node} />}
+            {node && <DecisionDetail key={node.id} node={node} integrations={integrations} />}
           </AnimatePresence>
         </section>
 
@@ -157,6 +168,38 @@ export default function Home() {
         </section>
       </div>
     </main>
+  );
+}
+
+function SystemsPanel({ x }: { x: Integrations }) {
+  // [label, value, active] — active drives the status dot color.
+  const rows: [string, string, boolean][] = [
+    ["Claude", "5 agents reasoned", true],
+    ["Redis Vector", `${x.redisVectorCandidates} precedents retrieved`, x.redisVectorCandidates > 0],
+    ["LangCache", x.langcacheHit ? "cache hit" : "miss → stored", true],
+    ["Agent Memory", x.agentMemory ? "preferences recalled" : "off", x.agentMemory],
+    ["Browserbase", x.browserbaseLive ? "live web signal" : "—", x.browserbaseLive],
+    ["Band", x.bandThreaded ? "approver thread posted" : x.bandRoom ? "room created" : "—", !!x.bandRoom],
+    ["Arize", x.arizeTraced ? "trace exported" : "off", x.arizeTraced],
+  ];
+  return (
+    <div className="rounded-xl border border-border bg-surface p-3 shadow-panel">
+      <div className="mb-2 font-mono text-[10.5px] uppercase tracking-wider text-faint">Systems engaged</div>
+      <div className="grid grid-cols-1 gap-1.5">
+        {rows.map(([label, value, active]) => (
+          <div key={label} className="flex items-center justify-between text-[12px]">
+            <span className="flex items-center gap-2">
+              <span
+                className="inline-block h-1.5 w-1.5 rounded-full"
+                style={{ background: active ? "var(--accent)" : "var(--hairline)" }}
+              />
+              <span className={active ? "text-fg" : "text-faint"}>{label}</span>
+            </span>
+            <span className="font-mono text-[11px] text-muted">{value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -177,7 +220,7 @@ function RunningLabel() {
         {[0, 1, 2].map((i) => (
           <motion.span
             key={i}
-            className="inline-block h-1 w-1 rounded-full bg-white"
+            className="inline-block h-1 w-1 rounded-full bg-on-cta"
             animate={{ opacity: [0.3, 1, 0.3] }}
             transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }}
           />
@@ -196,7 +239,7 @@ const item = {
   show: { opacity: 1, y: 0 },
 };
 
-function DecisionDetail({ node }: { node: DecisionNode }) {
+function DecisionDetail({ node, integrations }: { node: DecisionNode; integrations: Integrations | null }) {
   const [durable, setDurable] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
@@ -241,6 +284,12 @@ function DecisionDetail({ node }: { node: DecisionNode }) {
         {durable && <p className="mt-2 font-mono text-[11px] text-faint">{durable}</p>}
       </motion.div>
 
+      {integrations && (
+        <motion.div variants={item}>
+          <SystemsPanel x={integrations} />
+        </motion.div>
+      )}
+
       <motion.div variants={item}>
         <div className="mb-1.5 font-mono text-[10.5px] uppercase tracking-wider text-faint">Agent reasoning trace</div>
         <ol className="flex flex-col gap-2">
@@ -251,6 +300,13 @@ function DecisionDetail({ node }: { node: DecisionNode }) {
                 <span className="font-mono text-[10px] text-faint">{s.title}</span>
               </div>
               <p className="mt-1 text-[12px] leading-snug text-muted">{s.detail}</p>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {AGENT_TECH[s.agent].map((t) => (
+                  <span key={t} className="rounded border border-hairline bg-surface2 px-1.5 py-0.5 font-mono text-[9.5px] text-faint">
+                    {t}
+                  </span>
+                ))}
+              </div>
             </motion.li>
           ))}
         </ol>

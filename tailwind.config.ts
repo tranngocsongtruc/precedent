@@ -16,6 +16,8 @@ export default {
         faint: "var(--faint)",
         accent: "var(--accent)",
         "accent-soft": "var(--accent-soft)",
+        cta: "var(--cta)",
+        "on-cta": "var(--on-cta)",
         approve: "var(--approve)",
         deny: "var(--deny)",
         pending: "var(--pending)",
