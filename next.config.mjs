@@ -4,6 +4,19 @@ import { withSentryConfig } from "@sentry/nextjs";
 const nextConfig = {
   // @huggingface/transformers ships native/wasm bits that must not be bundled.
   serverExternalPackages: ["@huggingface/transformers", "redis"],
+  // The local-embedding stack (transformers + onnxruntime + sharp) is ~hundreds
+  // of MB and blows past Vercel's 250 MB function limit. On Vercel we use the
+  // Voyage backend (EMBEDDINGS_BACKEND=voyage), so the local path never runs —
+  // exclude those packages from the serverless trace. They stay installed for
+  // local dev, where EMBEDDINGS_BACKEND=local still works.
+  outputFileTracingExcludes: {
+    "*": [
+      "node_modules/@huggingface/**",
+      "node_modules/onnxruntime-node/**",
+      "node_modules/@img/**",
+      "node_modules/sharp/**",
+    ],
+  },
 };
 
 // Source-map upload only happens when SENTRY_AUTH_TOKEN/org/project are present;

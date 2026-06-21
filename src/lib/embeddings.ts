@@ -34,17 +34,28 @@ async function embedLocal(text: string): Promise<number[]> {
   return Array.from(out.data);
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function embedVoyage(text: string): Promise<number[]> {
   const key = env.voyageKey();
   if (!key) throw new Error("EMBEDDINGS_BACKEND=voyage but VOYAGE_API_KEY is unset");
-  const res = await fetch("https://api.voyageai.com/v1/embeddings", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model: "voyage-3-lite", input: text }),
-  });
-  if (!res.ok) throw new Error(`Voyage embeddings failed: ${res.status} ${await res.text()}`);
-  const json = (await res.json()) as { data: { embedding: number[] }[] };
-  return json.data[0].embedding;
+  // Voyage's no-card free tier is throttled to 3 req/min; back off on 429 so
+  // seeding and bursts of decisions survive. (Add a payment method to lift this —
+  // the 200M free tokens still apply, so it stays free.)
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch("https://api.voyageai.com/v1/embeddings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: "voyage-3-lite", input: text }),
+    });
+    if (res.status === 429 && attempt < 6) {
+      await sleep(21_000); // 3 req/min ≈ one every 20s
+      continue;
+    }
+    if (!res.ok) throw new Error(`Voyage embeddings failed: ${res.status} ${await res.text()}`);
+    const json = (await res.json()) as { data: { embedding: number[] }[] };
+    return json.data[0].embedding;
+  }
 }
 
 export async function embed(text: string): Promise<number[]> {
