@@ -325,12 +325,15 @@ function Reasoning({
 }
 
 function RecommendationCard({ node }: { node: DecisionNode }) {
-  const [durable, setDurable] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [resolving, setResolving] = useState(false);
+  const [exec, setExec] = useState<{ id: string; status: string } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
 
-  const sendForApproval = async () => {
+  // Park the decision as a durable AgentSpan run that pauses awaiting approval.
+  const park = async () => {
     setSending(true);
-    setDurable(null);
+    setMsg(null);
     try {
       const res = await fetch("/api/durable/approval", {
         method: "POST",
@@ -342,11 +345,35 @@ function RecommendationCard({ node }: { node: DecisionNode }) {
         }),
       });
       const json = await res.json();
-      setDurable(res.ok ? `Parked as durable approval → ${json.approver}.` : json.error ?? "Sidecar unavailable");
+      if (res.ok && json.executionId) {
+        setExec({ id: json.executionId, status: json.status ?? "awaiting_approval" });
+      } else {
+        setMsg(json.error ?? "Sidecar unavailable — start it locally to demo AgentSpan.");
+      }
     } catch {
-      setDurable("Sidecar unavailable");
+      setMsg("Sidecar unavailable — run: agentspan server start + uvicorn app:app --port 8088");
     } finally {
       setSending(false);
+    }
+  };
+
+  // Resume the paused AgentSpan run (this is the human-in-the-loop step).
+  const resolve = async (action: "approve" | "reject") => {
+    if (!exec) return;
+    setResolving(true);
+    try {
+      const res = await fetch(`/api/durable/approval/${encodeURIComponent(exec.id)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const json = await res.json();
+      setExec((e) => (e ? { ...e, status: json.outcome ?? json.state ?? "resolved" } : e));
+      setMsg(res.ok ? `AgentSpan run ${json.outcome ?? "resolved"}.` : json.error ?? "resolve failed");
+    } catch {
+      setMsg("resolve failed");
+    } finally {
+      setResolving(false);
     }
   };
 
@@ -360,16 +387,54 @@ function RecommendationCard({ node }: { node: DecisionNode }) {
       <div className="mt-0.5 font-display text-[13px] font-bold uppercase tracking-wide">{node.status}</div>
       <p className="mt-1.5 text-[13px] leading-relaxed text-fg/90">{node.recommendation}</p>
       <div className="mt-2 font-mono text-[11px] text-muted">→ {node.routing.approverName}</div>
-      {node.status === "pending" && (
+
+      {node.status === "pending" && !exec && (
         <button
-          onClick={sendForApproval}
+          onClick={park}
           disabled={sending}
           className="mt-2.5 rounded-md border border-border px-2.5 py-1 text-[11px] text-muted transition-colors hover:border-accent hover:text-fg disabled:opacity-50"
         >
-          {sending ? "Routing…" : "Send for durable approval (AgentSpan)"}
+          {sending ? "Parking on AgentSpan…" : "Send for durable approval (AgentSpan)"}
         </button>
       )}
-      {durable && <p className="mt-2 font-mono text-[11px] text-faint">{durable}</p>}
+
+      {exec && (
+        <div className="mt-2.5 rounded-md border border-border bg-surface2 p-2">
+          <div className="font-mono text-[9.5px] uppercase tracking-wider text-faint">AgentSpan · durable run</div>
+          <div className="mt-0.5 text-[12px] text-muted">
+            Status: <span className="text-fg">{exec.status}</span>
+          </div>
+          <div className="truncate font-mono text-[9.5px] text-faint">exec {exec.id}</div>
+          <a
+            href="http://localhost:6767"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[11px] text-accent hover:underline"
+          >
+            View paused run in AgentSpan ↗
+          </a>
+          {exec.status === "awaiting_approval" && (
+            <div className="mt-1.5 flex gap-2">
+              <button
+                onClick={() => resolve("approve")}
+                disabled={resolving}
+                className="rounded border border-approve/60 px-2 py-0.5 text-[11px] text-approve transition-colors hover:bg-approve/10 disabled:opacity-50"
+              >
+                Approve
+              </button>
+              <button
+                onClick={() => resolve("reject")}
+                disabled={resolving}
+                className="rounded border border-deny/60 px-2 py-0.5 text-[11px] text-deny transition-colors hover:bg-deny/10 disabled:opacity-50"
+              >
+                Deny
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {msg && <p className="mt-2 font-mono text-[11px] text-faint">{msg}</p>}
     </motion.div>
   );
 }
