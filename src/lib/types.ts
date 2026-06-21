@@ -59,6 +59,16 @@ export interface ApproverRouting {
   reasoning: string;
 }
 
+/** LLM-as-judge evaluation of a decision's recommendation (logged to Arize). */
+export interface DecisionEval {
+  score: number; // 0..1 overall
+  label: "good" | "needs_improvement";
+  compliance: number; // 0..1 — respects cited policy rules
+  grounding: number; // 0..1 — supported by precedent + context, no fabrication
+  clarity: number; // 0..1 — clear, actionable call
+  critique: string;
+}
+
 /** One step in the agent reasoning chain — every step becomes a graph node. */
 export interface TraceStep {
   agent:
@@ -66,7 +76,8 @@ export interface TraceStep {
     | "context-gatherer"
     | "precedent-retriever"
     | "policy-evaluator"
-    | "approver-router";
+    | "approver-router"
+    | "evaluator";
   title: string;
   detail: string;
   /** Arbitrary structured payload for the UI to render. */
@@ -89,6 +100,9 @@ export interface DecisionNode {
   trace: TraceStep[];
   /** Decision IDs this one cited as precedent — graph edges. */
   citedPrecedentIds: string[];
+  /** LLM-judge score of the recommendation; `refined` = it was auto-improved. */
+  evaluation?: DecisionEval;
+  refined?: boolean;
   /** Text that gets embedded for future precedent search. */
   embedText: string;
   embedding?: number[];

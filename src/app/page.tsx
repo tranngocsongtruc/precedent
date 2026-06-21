@@ -19,6 +19,7 @@ const AGENT_LABEL: Record<TraceStep["agent"], string> = {
   "precedent-retriever": "Precedent Retriever",
   "policy-evaluator": "Policy Evaluator",
   "approver-router": "Approver Router",
+  evaluator: "Evaluator (LLM judge)",
 };
 
 // What technology each agent leans on — shown as a chip under its trace step.
@@ -28,6 +29,7 @@ const AGENT_TECH: Record<TraceStep["agent"], string[]> = {
   "precedent-retriever": ["Redis Vector", "LangCache"],
   "policy-evaluator": ["Claude"],
   "approver-router": ["Agent Memory", "Claude"],
+  evaluator: ["Arize eval", "Claude"],
 };
 
 const STATUS_RING: Record<string, string> = {
@@ -124,11 +126,16 @@ export default function Home() {
               />
             </div>
             <textarea
-              value={interim ? `${text} ${interim}`.trim() : text}
+              value={text}
               onChange={(e) => setText(e.target.value)}
               rows={5}
               className="w-full resize-none rounded-lg border border-border bg-surface px-3 py-2.5 text-sm leading-relaxed text-fg outline-none transition-colors focus:border-accent"
             />
+            {interim && (
+              <p className="mt-1 flex items-center gap-1.5 text-[12px] italic text-faint">
+                <span className="animate-pulse not-italic">🎙</span> {interim}
+              </p>
+            )}
           </div>
 
           <motion.button
@@ -154,6 +161,8 @@ export default function Home() {
             )}
           </AnimatePresence>
 
+          {!node && !running && <IntroCard />}
+
           <AnimatePresence mode="wait">
             {node && <DecisionDetail key={node.id} node={node} integrations={integrations} />}
           </AnimatePresence>
@@ -168,6 +177,85 @@ export default function Home() {
         </section>
       </div>
     </main>
+  );
+}
+
+function IntroCard() {
+  const steps = [
+    "State a pricing-exception ask — type it or click “Speak the ask”.",
+    "Hit Capture — 5 Claude agents gather cross-system context, find comparable past decisions (Redis vector search), check policy, and route an approver.",
+    "The decision + its full reasoning trace is saved as a node in the graph on the right — the “why” the CRM throws away.",
+  ];
+  return (
+    <div className="rounded-xl border border-border bg-surface p-4 shadow-panel">
+      <div className="font-display text-[14px] font-semibold text-fg">What this is</div>
+      <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
+        A deal-desk copilot that captures the reasoning behind every discount/terms exception
+        and turns it into a queryable <span className="text-accent">precedent graph</span>.
+      </p>
+      <div className="mt-3 font-mono text-[10.5px] uppercase tracking-wider text-faint">How to use</div>
+      <ol className="mt-1.5 flex flex-col gap-2">
+        {steps.map((s, i) => (
+          <li key={i} className="flex gap-2 text-[12.5px] leading-snug text-muted">
+            <span className="flex h-4 w-4 flex-none items-center justify-center rounded-full bg-accent-soft font-mono text-[10px] text-accent">
+              {i + 1}
+            </span>
+            <span>{s}</span>
+          </li>
+        ))}
+      </ol>
+      <p className="mt-3 text-[12px] text-faint">
+        The example ask is pre-filled — just hit <span className="text-fg">Capture decision</span>.
+      </p>
+    </div>
+  );
+}
+
+function QualityCard({
+  e,
+  refined,
+}: {
+  e: NonNullable<DecisionNode["evaluation"]>;
+  refined?: boolean;
+}) {
+  const pct = Math.round(e.score * 100);
+  const good = e.label === "good";
+  const color = good ? "var(--approve)" : "var(--pending)";
+  const dims: [string, number][] = [
+    ["compliance", e.compliance],
+    ["grounding", e.grounding],
+    ["clarity", e.clarity],
+  ];
+  return (
+    <div className="rounded-xl border border-border bg-surface p-3 shadow-panel">
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-[10.5px] uppercase tracking-wider text-faint">
+          Quality eval · Arize
+        </span>
+        <span className="font-mono text-[13px] font-bold" style={{ color }}>
+          {pct}% {good ? "✓" : "⚠"}
+        </span>
+      </div>
+      <div className="mt-2 flex gap-3">
+        {dims.map(([label, v]) => (
+          <div key={label} className="flex-1">
+            <div className="mb-0.5 flex justify-between font-mono text-[9.5px] text-faint">
+              <span>{label}</span>
+              <span>{Math.round(v * 100)}</span>
+            </div>
+            <div className="h-1 rounded-full bg-surface2">
+              <div className="h-1 rounded-full" style={{ width: `${v * 100}%`, background: color }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 text-[12px] leading-snug text-muted">{e.critique}</p>
+      {refined && (
+        <p className="mt-1.5 font-mono text-[10.5px] text-accent">
+          ↻ auto-refined from a sub-threshold score using the judge&apos;s feedback
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -283,6 +371,12 @@ function DecisionDetail({ node, integrations }: { node: DecisionNode; integratio
         )}
         {durable && <p className="mt-2 font-mono text-[11px] text-faint">{durable}</p>}
       </motion.div>
+
+      {node.evaluation && (
+        <motion.div variants={item}>
+          <QualityCard e={node.evaluation} refined={node.refined} />
+        </motion.div>
+      )}
 
       {integrations && (
         <motion.div variants={item}>

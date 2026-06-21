@@ -7,7 +7,7 @@ import { claudeJSON, claudeText } from "@/lib/anthropic";
 import { embed } from "@/lib/embeddings";
 import { ensureIndex, saveDecision } from "@/lib/redis";
 import { langcacheSearch, langcacheStore } from "@/lib/langcache";
-import { initTracing, withSpan } from "@/lib/tracing";
+import { initTracing, withSpan, flushTracing } from "@/lib/tracing";
 import { bandRecordDecision } from "@/lib/band";
 import { agentMemoryEnabled } from "@/lib/agentMemory";
 import { env } from "@/lib/env";
@@ -23,6 +23,7 @@ import { gatherContext } from "./contextGatherer";
 import { retrievePrecedents } from "./precedentRetriever";
 import { evaluatePolicy } from "./policyEvaluator";
 import { routeApprover } from "./approverRouter";
+import { evaluateDecision, EVAL_THRESHOLD } from "./evaluator";
 
 let idCounter = 0;
 function newId(): string {
@@ -60,12 +61,16 @@ async function parseRequest(rawText: string, requestedBy: string): Promise<Decis
 }
 
 // Map each agent to its OpenInference span kind for clean rendering in Arize.
-const SPAN_KIND: Record<TraceStep["agent"], "AGENT" | "CHAIN" | "LLM" | "RETRIEVER" | "TOOL"> = {
+const SPAN_KIND: Record<
+  TraceStep["agent"],
+  "AGENT" | "CHAIN" | "LLM" | "RETRIEVER" | "TOOL" | "EVALUATOR"
+> = {
   orchestrator: "CHAIN",
   "context-gatherer": "AGENT",
   "precedent-retriever": "RETRIEVER",
   "policy-evaluator": "LLM",
   "approver-router": "AGENT",
+  evaluator: "EVALUATOR",
 };
 
 export async function runDecision(
@@ -77,9 +82,15 @@ export async function runDecision(
   await ensureIndex();
 
   // One root span groups all five agents into a single Arize trace tree.
-  return withSpan("precedent.decision", "AGENT", { "rep.name": requestedBy }, async () =>
-    runDecisionTraced(rawText, requestedBy, emit)
-  );
+  try {
+    return await withSpan("precedent.decision", "AGENT", { "rep.name": requestedBy }, async () =>
+      runDecisionTraced(rawText, requestedBy, emit)
+    );
+  } finally {
+    // Push spans to Arize now — don't wait for the batch timer (which never
+    // fires on serverless before the function freezes).
+    await flushTracing();
+  }
 }
 
 async function runDecisionTraced(
@@ -157,7 +168,10 @@ async function runDecisionTraced(
 
   // Final synthesis.
   const status: DecisionStatus = policy.withinAutoApproval ? "approved" : "pending";
-  const recommendation = await step("orchestrator", "Synthesized recommendation", async () => {
+  const precedentLine =
+    precedent.relevant.map((p) => `${p.account} ${p.askValue}%→${p.outcome}`).join("; ") || "none";
+
+  let recommendation = await step("orchestrator", "Synthesized recommendation", async () => {
     const text = await claudeText({
       system:
         "You are the deal-desk copilot. In 2-3 sentences, give the approver a " +
@@ -168,12 +182,60 @@ async function runDecisionTraced(
         `Justification: ${request.justification}\n` +
         `Context: ${brief}\n` +
         `Policy: ${policy.reasoning} (rules: ${policy.citedRules.join(", ")})\n` +
-        `Comparable precedent: ${precedent.relevant.map((p) => `${p.account} ${p.askValue}% -> ${p.outcome}`).join("; ") || "none"}\n` +
+        `Comparable precedent: ${precedentLine}\n` +
         `Routed to: ${routing.approverName}`,
       maxTokens: 350,
     });
     return { detail: text, value: text };
   });
+
+  // ── LLM-judge evaluation (logged to Arize) + auto-refine if weak. ──
+  const pushEval = (title: string, e: typeof evaluation) => {
+    const at = nowISO();
+    const s: TraceStep = {
+      agent: "evaluator",
+      title,
+      detail: `${Math.round(e.score * 100)}% · ${e.label} — ${e.critique}`,
+      data: e,
+      startedAt: at,
+      finishedAt: nowISO(),
+    };
+    trace.push(s);
+    emit?.(s);
+  };
+
+  let evaluation = await evaluateDecision({
+    request,
+    brief,
+    policy,
+    precedents: precedent.relevant,
+    recommendation,
+  });
+  pushEval("Scored recommendation", evaluation);
+
+  let refined = false;
+  if (evaluation.score < EVAL_THRESHOLD) {
+    refined = true;
+    recommendation = await claudeText({
+      system:
+        "Revise the deal-desk recommendation to fix the judge's critique while staying " +
+        "policy-compliant and grounded in the cited precedent. 2-3 sentences, clear final call.",
+      prompt:
+        `Original recommendation: ${recommendation}\n` +
+        `Judge critique: ${evaluation.critique}\n` +
+        `Policy: ${policy.reasoning} (rules ${policy.citedRules.join(", ")})\n` +
+        `Cited precedent: ${precedentLine}`,
+      maxTokens: 350,
+    });
+    evaluation = await evaluateDecision({
+      request,
+      brief,
+      policy,
+      precedents: precedent.relevant,
+      recommendation,
+    });
+    pushEval("Auto-refined & re-scored", evaluation);
+  }
 
   // Build + persist the durable graph node.
   const id = newId();
@@ -191,6 +253,8 @@ async function runDecisionTraced(
     policy,
     routing,
     trace,
+    evaluation,
+    refined,
     citedPrecedentIds: precedent.relevant.map((p) => p.decisionId),
     embedText,
     embedding: await embed(embedText),

@@ -3,11 +3,22 @@
 // conventions: one span per agent, child spans for each LLM call. Traces stream
 // to Arize cloud over OTLP/HTTP. Fail-soft: with no Arize keys, tracing is a
 // no-op and the app runs normally.
-import { trace, context, SpanStatusCode, type Span } from "@opentelemetry/api";
+import {
+  trace,
+  context,
+  SpanStatusCode,
+  diag,
+  DiagConsoleLogger,
+  DiagLogLevel,
+  type Span,
+} from "@opentelemetry/api";
 import { env } from "./env";
 
 const TRACER_NAME = "precedent";
 let initialized = false;
+// Held so we can force-flush before a request/serverless function ends —
+// otherwise batched spans never reach Arize (the "No traces yet" symptom).
+let providerRef: { forceFlush: () => Promise<void> } | null = null;
 
 /** Initialize the global tracer provider once (server-side). Safe to call repeatedly. */
 export async function initTracing(): Promise<void> {
@@ -15,6 +26,9 @@ export async function initTracing(): Promise<void> {
   initialized = true;
   const cfg = env.arize();
   if (!cfg) return; // tracing disabled
+
+  // Surface OTLP export errors (otherwise failures are silent → "no traces").
+  diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.ERROR);
 
   // Dynamic imports keep these node-only packages out of any client bundle.
   const { NodeTracerProvider, BatchSpanProcessor } = await import(
@@ -40,7 +54,17 @@ export async function initTracing(): Promise<void> {
     spanProcessors: [new BatchSpanProcessor(exporter)],
   });
   provider.register();
+  providerRef = provider;
   console.log(`[tracing] Arize OTLP tracing enabled -> ${cfg.endpoint} (project ${cfg.project})`);
+}
+
+/** Force-export any buffered spans. Call before a request/function returns. */
+export async function flushTracing(): Promise<void> {
+  try {
+    await providerRef?.forceFlush();
+  } catch (e) {
+    console.warn("[tracing] flush failed:", e);
+  }
 }
 
 function tracer() {
@@ -54,7 +78,7 @@ function tracer() {
  */
 export async function withSpan<T>(
   name: string,
-  kind: "AGENT" | "CHAIN" | "LLM" | "RETRIEVER" | "TOOL",
+  kind: "AGENT" | "CHAIN" | "LLM" | "RETRIEVER" | "TOOL" | "EVALUATOR",
   attrs: Record<string, string | number | boolean>,
   fn: (span: Span) => Promise<T>
 ): Promise<T> {
