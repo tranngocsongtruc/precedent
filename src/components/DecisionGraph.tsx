@@ -23,15 +23,20 @@ const STATUS_VAR: Record<string, string> = {
   escalated: "var(--escalate)",
 };
 
-function DecisionNodeView({ data }: NodeProps<GraphVizNode>) {
+function DecisionNodeView({ data }: NodeProps<GraphVizNode & { highlight?: boolean }>) {
   const color = STATUS_VAR[data.status ?? "pending"] ?? "var(--pending)";
+  const hl = (data as GraphVizNode & { highlight?: boolean }).highlight;
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.92 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ type: "spring", stiffness: 260, damping: 22 }}
+      animate={
+        hl
+          ? { opacity: 1, scale: [1, 1.08, 1], boxShadow: [`0 0 0 0 ${color}`, `0 0 0 6px transparent`] }
+          : { opacity: 1, scale: 1 }
+      }
+      transition={hl ? { duration: 1.1, repeat: 3 } : { type: "spring", stiffness: 260, damping: 22 }}
       className="rounded-xl border bg-surface px-3 py-2 text-left shadow-panel"
-      style={{ borderColor: color, minWidth: 172, maxWidth: 220 }}
+      style={{ borderColor: color, minWidth: 172, maxWidth: 220, borderWidth: hl ? 2 : 1 }}
     >
       <Handle type="target" position={Position.Left} style={{ background: "var(--border)" }} />
       <div className="font-display text-[13px] font-semibold text-fg">{data.label}</div>
@@ -66,9 +71,12 @@ function EntityNodeView({ data }: NodeProps<GraphVizNode>) {
 
 const nodeTypes = { decision: DecisionNodeView, entity: EntityNodeView };
 
-function layout(payload: GraphPayload): { nodes: Node[]; edges: Edge[] } {
+function layout(payload: GraphPayload, highlightId?: string | null): { nodes: Node[]; edges: Edge[] } {
   const entities = payload.nodes.filter((n) => n.type === "entity");
-  const decisions = payload.nodes.filter((n) => n.type === "decision");
+  // Newest/highlighted decision first so it lands top-left and is easy to spot.
+  const decisions = payload.nodes
+    .filter((n) => n.type === "decision")
+    .sort((a, b) => (a.id === highlightId ? -1 : b.id === highlightId ? 1 : 0));
 
   const nodes: Node[] = [];
   entities.forEach((e, i) => {
@@ -77,7 +85,12 @@ function layout(payload: GraphPayload): { nodes: Node[]; edges: Edge[] } {
   decisions.forEach((d, i) => {
     const col = 1 + (i % 3);
     const row = Math.floor(i / 3);
-    nodes.push({ id: d.id, type: "decision", position: { x: col * 300, y: row * 150 + 20 }, data: d });
+    nodes.push({
+      id: d.id,
+      type: "decision",
+      position: { x: col * 300, y: row * 150 + 20 },
+      data: { ...d, highlight: d.id === highlightId },
+    });
   });
 
   const edges: Edge[] = payload.edges.map((e) => ({
@@ -94,12 +107,14 @@ function layout(payload: GraphPayload): { nodes: Node[]; edges: Edge[] } {
 
 export default function DecisionGraph({
   payload,
+  highlightId,
   onSelect,
 }: {
   payload: GraphPayload;
+  highlightId?: string | null;
   onSelect?: (id: string) => void;
 }) {
-  const { nodes, edges } = useMemo(() => layout(payload), [payload]);
+  const { nodes, edges } = useMemo(() => layout(payload, highlightId), [payload, highlightId]);
 
   return (
     <ReactFlow

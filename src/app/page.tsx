@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { motion, AnimatePresence } from "framer-motion";
 import VoiceButton from "@/components/VoiceButton";
 import ThemeToggle from "@/components/ThemeToggle";
-import type { DecisionNode, GraphPayload, Integrations, TraceStep } from "@/lib/types";
+import type { DecisionEval, DecisionNode, GraphPayload, Integrations, TraceStep } from "@/lib/types";
 
 const DecisionGraph = dynamic(() => import("@/components/DecisionGraph"), { ssr: false });
 
@@ -22,7 +22,6 @@ const AGENT_LABEL: Record<TraceStep["agent"], string> = {
   evaluator: "Evaluator (LLM judge)",
 };
 
-// What technology each agent leans on — shown as a chip under its trace step.
 const AGENT_TECH: Record<TraceStep["agent"], string[]> = {
   orchestrator: ["Claude"],
   "context-gatherer": ["Browserbase", "CRM/Zendesk/PagerDuty"],
@@ -39,15 +38,22 @@ const STATUS_RING: Record<string, string> = {
   escalated: "text-escalate border-escalate/60",
 };
 
+interface DonePayload {
+  node: DecisionNode;
+  integrations: Integrations;
+}
+
 export default function Home() {
   const [text, setText] = useState(EXAMPLE);
   const [requestedBy, setRequestedBy] = useState("Sam Rivera (AE)");
   const [running, setRunning] = useState(false);
   const [interim, setInterim] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [steps, setSteps] = useState<TraceStep[]>([]);
   const [node, setNode] = useState<DecisionNode | null>(null);
   const [integrations, setIntegrations] = useState<Integrations | null>(null);
   const [graph, setGraph] = useState<GraphPayload>({ nodes: [], edges: [] });
+  const [highlightId, setHighlightId] = useState<string | null>(null);
 
   const refreshGraph = useCallback(async () => {
     try {
@@ -66,17 +72,49 @@ export default function Home() {
     setRunning(true);
     setError(null);
     setNode(null);
+    setIntegrations(null);
+    setSteps([]);
+    setHighlightId(null);
     try {
       const res = await fetch("/api/decide", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rawText: text, requestedBy }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "decision failed");
-      setNode(json.node as DecisionNode);
-      setIntegrations((json.integrations as Integrations) ?? null);
-      await refreshGraph();
+      if (!res.ok || !res.body) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error ?? "decision failed");
+      }
+
+      // Read the SSE stream and reveal each agent step as it arrives.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const frame = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const event = frame.match(/^event: (.*)$/m)?.[1];
+          const data = frame.match(/^data: (.*)$/m)?.[1];
+          if (!event || !data) continue;
+          const payload = JSON.parse(data);
+          if (event === "step") {
+            setSteps((s) => [...s, payload as TraceStep]);
+          } else if (event === "done") {
+            const d = payload as DonePayload;
+            setNode(d.node);
+            setIntegrations(d.integrations);
+            setHighlightId(d.node.id);
+            refreshGraph();
+          } else if (event === "error") {
+            setError((payload as { error: string }).error);
+          }
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "decision failed");
     } finally {
@@ -85,6 +123,7 @@ export default function Home() {
   };
 
   const decisionCount = graph.nodes.filter((n) => n.type === "decision").length;
+  const showReasoning = running || steps.length > 0 || node;
 
   return (
     <main className="flex h-screen flex-col bg-bg">
@@ -96,15 +135,15 @@ export default function Home() {
           <p className="hidden text-[12px] text-faint sm:block">a context graph for enterprise decisions</p>
         </div>
         <div className="flex items-center gap-4">
-          <span className="hidden font-mono text-[10.5px] uppercase tracking-wider text-faint md:block">
+          <span className="hidden font-mono text-[10.5px] uppercase tracking-wider text-faint lg:block">
             Claude · Redis Vector · Agent Memory · LangCache · Arize · Band
           </span>
           <ThemeToggle />
         </div>
       </header>
 
-      <div className="grid flex-1 grid-cols-[440px_1fr] overflow-hidden">
-        {/* Left: intake + trace */}
+      <div className="grid flex-1 grid-cols-[330px_minmax(380px,440px)_1fr] overflow-hidden">
+        {/* 1 — Intake */}
         <section className="flex flex-col gap-3 overflow-y-auto border-r border-border p-5">
           <Field label="Requested by">
             <input
@@ -161,133 +200,38 @@ export default function Home() {
             )}
           </AnimatePresence>
 
-          {!node && !running && <IntroCard />}
-
-          <AnimatePresence mode="wait">
-            {node && <DecisionDetail key={node.id} node={node} integrations={integrations} />}
-          </AnimatePresence>
+          <IntroCard />
         </section>
 
-        {/* Right: the graph */}
+        {/* 2 — Live reasoning / analysis (streams in step-by-step) */}
+        <section className="flex flex-col overflow-y-auto border-r border-border">
+          <div className="sticky top-0 z-10 border-b border-border bg-bg/90 px-5 py-2.5 backdrop-blur">
+            <span className="font-mono text-[10.5px] uppercase tracking-wider text-faint">
+              {node ? "Decision" : running ? "Reasoning live…" : "Reasoning & analysis"}
+            </span>
+          </div>
+          <div className="flex-1 p-5">
+            {showReasoning ? (
+              <Reasoning steps={node ? node.trace : steps} node={node} integrations={integrations} running={running} />
+            ) : (
+              <p className="mt-10 text-center text-[13px] leading-relaxed text-faint">
+                Hit <span className="text-fg">Capture decision</span> and the five agents will
+                reason here one by one — context, precedent, policy, routing, and a quality score.
+              </p>
+            )}
+          </div>
+        </section>
+
+        {/* 3 — Decision-lineage graph */}
         <section className="relative bg-bg">
           <div className="pointer-events-none absolute left-5 top-4 z-10 font-mono text-[10.5px] uppercase tracking-wider text-faint">
             Decision lineage · {decisionCount} decisions
           </div>
-          <DecisionGraph payload={graph} />
+          <GraphLegend />
+          <DecisionGraph payload={graph} highlightId={highlightId} />
         </section>
       </div>
     </main>
-  );
-}
-
-function IntroCard() {
-  const steps = [
-    "State a pricing-exception ask — type it or click “Speak the ask”.",
-    "Hit Capture — 5 Claude agents gather cross-system context, find comparable past decisions (Redis vector search), check policy, and route an approver.",
-    "The decision + its full reasoning trace is saved as a node in the graph on the right — the “why” the CRM throws away.",
-  ];
-  return (
-    <div className="rounded-xl border border-border bg-surface p-4 shadow-panel">
-      <div className="font-display text-[14px] font-semibold text-fg">What this is</div>
-      <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
-        A deal-desk copilot that captures the reasoning behind every discount/terms exception
-        and turns it into a queryable <span className="text-accent">precedent graph</span>.
-      </p>
-      <div className="mt-3 font-mono text-[10.5px] uppercase tracking-wider text-faint">How to use</div>
-      <ol className="mt-1.5 flex flex-col gap-2">
-        {steps.map((s, i) => (
-          <li key={i} className="flex gap-2 text-[12.5px] leading-snug text-muted">
-            <span className="flex h-4 w-4 flex-none items-center justify-center rounded-full bg-accent-soft font-mono text-[10px] text-accent">
-              {i + 1}
-            </span>
-            <span>{s}</span>
-          </li>
-        ))}
-      </ol>
-      <p className="mt-3 text-[12px] text-faint">
-        The example ask is pre-filled — just hit <span className="text-fg">Capture decision</span>.
-      </p>
-    </div>
-  );
-}
-
-function QualityCard({
-  e,
-  refined,
-}: {
-  e: NonNullable<DecisionNode["evaluation"]>;
-  refined?: boolean;
-}) {
-  const pct = Math.round(e.score * 100);
-  const good = e.label === "good";
-  const color = good ? "var(--approve)" : "var(--pending)";
-  const dims: [string, number][] = [
-    ["compliance", e.compliance],
-    ["grounding", e.grounding],
-    ["clarity", e.clarity],
-  ];
-  return (
-    <div className="rounded-xl border border-border bg-surface p-3 shadow-panel">
-      <div className="flex items-center justify-between">
-        <span className="font-mono text-[10.5px] uppercase tracking-wider text-faint">
-          Quality eval · Arize
-        </span>
-        <span className="font-mono text-[13px] font-bold" style={{ color }}>
-          {pct}% {good ? "✓" : "⚠"}
-        </span>
-      </div>
-      <div className="mt-2 flex gap-3">
-        {dims.map(([label, v]) => (
-          <div key={label} className="flex-1">
-            <div className="mb-0.5 flex justify-between font-mono text-[9.5px] text-faint">
-              <span>{label}</span>
-              <span>{Math.round(v * 100)}</span>
-            </div>
-            <div className="h-1 rounded-full bg-surface2">
-              <div className="h-1 rounded-full" style={{ width: `${v * 100}%`, background: color }} />
-            </div>
-          </div>
-        ))}
-      </div>
-      <p className="mt-2 text-[12px] leading-snug text-muted">{e.critique}</p>
-      {refined && (
-        <p className="mt-1.5 font-mono text-[10.5px] text-accent">
-          ↻ auto-refined from a sub-threshold score using the judge&apos;s feedback
-        </p>
-      )}
-    </div>
-  );
-}
-
-function SystemsPanel({ x }: { x: Integrations }) {
-  // [label, value, active] — active drives the status dot color.
-  const rows: [string, string, boolean][] = [
-    ["Claude", "5 agents reasoned", true],
-    ["Redis Vector", `${x.redisVectorCandidates} precedents retrieved`, x.redisVectorCandidates > 0],
-    ["LangCache", x.langcacheHit ? "cache hit" : "miss → stored", true],
-    ["Agent Memory", x.agentMemory ? "preferences recalled" : "off", x.agentMemory],
-    ["Browserbase", x.browserbaseLive ? "live web signal" : "—", x.browserbaseLive],
-    ["Band", x.bandThreaded ? "approver thread posted" : x.bandRoom ? "room created" : "—", !!x.bandRoom],
-    ["Arize", x.arizeTraced ? "trace exported" : "off", x.arizeTraced],
-  ];
-  return (
-    <div className="rounded-xl border border-border bg-surface p-3 shadow-panel">
-      <div className="mb-2 font-mono text-[10.5px] uppercase tracking-wider text-faint">Systems engaged</div>
-      <div className="grid grid-cols-1 gap-1.5">
-        {rows.map(([label, value, active]) => (
-          <div key={label} className="flex items-center justify-between text-[12px]">
-            <span className="flex items-center gap-2">
-              <span
-                className="inline-block h-1.5 w-1.5 rounded-full"
-                style={{ background: active ? "var(--accent)" : "var(--hairline)" }}
-              />
-              <span className={active ? "text-fg" : "text-faint"}>{label}</span>
-            </span>
-            <span className="font-mono text-[11px] text-muted">{value}</span>
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
 
@@ -318,16 +262,69 @@ function RunningLabel() {
   );
 }
 
-const container = {
-  hidden: {},
-  show: { transition: { staggerChildren: 0.07 } },
-};
-const item = {
-  hidden: { opacity: 0, y: 8 },
-  show: { opacity: 1, y: 0 },
-};
+// ── Streaming reasoning column ───────────────────────────────────────────────
+function Reasoning({
+  steps,
+  node,
+  integrations,
+  running,
+}: {
+  steps: TraceStep[];
+  node: DecisionNode | null;
+  integrations: Integrations | null;
+  running: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      {node && <RecommendationCard node={node} />}
+      {node?.evaluation && <QualityCard e={node.evaluation} refined={node.refined} />}
+      {integrations && <SystemsPanel x={integrations} />}
 
-function DecisionDetail({ node, integrations }: { node: DecisionNode; integrations: Integrations | null }) {
+      <div>
+        <div className="mb-1.5 font-mono text-[10.5px] uppercase tracking-wider text-faint">
+          Agent reasoning trace
+        </div>
+        <ol className="flex flex-col gap-2">
+          <AnimatePresence initial={false}>
+            {steps.map((s, i) => (
+              <motion.li
+                key={`${s.agent}-${i}`}
+                initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                transition={{ type: "spring", stiffness: 300, damping: 26 }}
+                className="rounded-lg border border-border bg-surface p-2.5"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[11px] font-semibold text-accent">{AGENT_LABEL[s.agent]}</span>
+                  <span className="font-mono text-[10px] text-faint">{s.title}</span>
+                </div>
+                <p className="mt-1 text-[12px] leading-snug text-muted">{s.detail}</p>
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {AGENT_TECH[s.agent].map((t) => (
+                    <span key={t} className="rounded border border-hairline bg-surface2 px-1.5 py-0.5 font-mono text-[9.5px] text-faint">
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              </motion.li>
+            ))}
+          </AnimatePresence>
+        </ol>
+        {running && (
+          <motion.div
+            animate={{ opacity: [0.4, 1, 0.4] }}
+            transition={{ duration: 1.2, repeat: Infinity }}
+            className="mt-2 flex items-center gap-2 px-1 font-mono text-[11px] text-faint"
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-accent" /> next agent thinking…
+          </motion.div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RecommendationCard({ node }: { node: DecisionNode }) {
   const [durable, setDurable] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
@@ -354,81 +351,142 @@ function DecisionDetail({ node, integrations }: { node: DecisionNode; integratio
   };
 
   return (
-    <motion.div variants={container} initial="hidden" animate="show" className="flex flex-col gap-3">
-      <motion.div variants={item} className={`rounded-xl border bg-surface p-3.5 shadow-panel ${STATUS_RING[node.status]}`}>
-        <div className="font-mono text-[10px] uppercase tracking-wider opacity-60">Recommendation</div>
-        <div className="mt-0.5 font-display text-[13px] font-bold uppercase tracking-wide">{node.status}</div>
-        <p className="mt-1.5 text-[13px] leading-relaxed text-fg/90">{node.recommendation}</p>
-        <div className="mt-2 font-mono text-[11px] text-muted">→ {node.routing.approverName}</div>
-        {node.status === "pending" && (
-          <button
-            onClick={sendForApproval}
-            disabled={sending}
-            className="mt-2.5 rounded-md border border-border px-2.5 py-1 text-[11px] text-muted transition-colors hover:border-accent hover:text-fg disabled:opacity-50"
-          >
-            {sending ? "Routing…" : "Send for durable approval (AgentSpan)"}
-          </button>
-        )}
-        {durable && <p className="mt-2 font-mono text-[11px] text-faint">{durable}</p>}
-      </motion.div>
-
-      {node.evaluation && (
-        <motion.div variants={item}>
-          <QualityCard e={node.evaluation} refined={node.refined} />
-        </motion.div>
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`rounded-xl border bg-surface p-3.5 shadow-panel ${STATUS_RING[node.status]}`}
+    >
+      <div className="font-mono text-[10px] uppercase tracking-wider opacity-60">Recommendation</div>
+      <div className="mt-0.5 font-display text-[13px] font-bold uppercase tracking-wide">{node.status}</div>
+      <p className="mt-1.5 text-[13px] leading-relaxed text-fg/90">{node.recommendation}</p>
+      <div className="mt-2 font-mono text-[11px] text-muted">→ {node.routing.approverName}</div>
+      {node.status === "pending" && (
+        <button
+          onClick={sendForApproval}
+          disabled={sending}
+          className="mt-2.5 rounded-md border border-border px-2.5 py-1 text-[11px] text-muted transition-colors hover:border-accent hover:text-fg disabled:opacity-50"
+        >
+          {sending ? "Routing…" : "Send for durable approval (AgentSpan)"}
+        </button>
       )}
-
-      {integrations && (
-        <motion.div variants={item}>
-          <SystemsPanel x={integrations} />
-        </motion.div>
-      )}
-
-      <motion.div variants={item}>
-        <div className="mb-1.5 font-mono text-[10.5px] uppercase tracking-wider text-faint">Agent reasoning trace</div>
-        <ol className="flex flex-col gap-2">
-          {node.trace.map((s, i) => (
-            <motion.li variants={item} key={i} className="rounded-lg border border-border bg-surface p-2.5">
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-[11px] font-semibold text-accent">{AGENT_LABEL[s.agent]}</span>
-                <span className="font-mono text-[10px] text-faint">{s.title}</span>
-              </div>
-              <p className="mt-1 text-[12px] leading-snug text-muted">{s.detail}</p>
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                {AGENT_TECH[s.agent].map((t) => (
-                  <span key={t} className="rounded border border-hairline bg-surface2 px-1.5 py-0.5 font-mono text-[9.5px] text-faint">
-                    {t}
-                  </span>
-                ))}
-              </div>
-            </motion.li>
-          ))}
-        </ol>
-      </motion.div>
-
-      {node.precedents.length > 0 && (
-        <motion.div variants={item}>
-          <div className="mb-1.5 font-mono text-[10.5px] uppercase tracking-wider text-faint">Cited precedent</div>
-          <ul className="flex flex-col gap-1.5">
-            {node.precedents.map((p) => (
-              <li key={p.decisionId} className="flex items-center justify-between rounded-lg border border-border bg-surface px-2.5 py-1.5 text-[12px]">
-                <span className="text-fg/90">
-                  {p.account} · {p.askValue}% {p.askType} <span className="text-faint">→ {p.outcome}</span>
-                </span>
-                <span className="font-mono text-[11px] text-faint">sim {p.score.toFixed(2)}</span>
-              </li>
-            ))}
-          </ul>
-        </motion.div>
-      )}
-
-      <motion.div variants={item}>
-        <div className="mb-1.5 font-mono text-[10.5px] uppercase tracking-wider text-faint">Policy</div>
-        <div className="rounded-lg border border-border bg-surface p-2.5 text-[12px] text-muted">
-          {node.policy.reasoning}
-          <div className="mt-1 font-mono text-[11px] text-faint">Rules: {node.policy.citedRules.join(", ") || "—"}</div>
-        </div>
-      </motion.div>
+      {durable && <p className="mt-2 font-mono text-[11px] text-faint">{durable}</p>}
     </motion.div>
+  );
+}
+
+function QualityCard({ e, refined }: { e: DecisionEval; refined?: boolean }) {
+  const pct = Math.round(e.score * 100);
+  const good = e.label === "good";
+  const color = good ? "var(--approve)" : "var(--pending)";
+  const dims: [string, number][] = [
+    ["compliance", e.compliance],
+    ["grounding", e.grounding],
+    ["clarity", e.clarity],
+  ];
+  return (
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="rounded-xl border border-border bg-surface p-3 shadow-panel">
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-[10.5px] uppercase tracking-wider text-faint">Quality eval · Arize</span>
+        <span className="font-mono text-[13px] font-bold" style={{ color }}>
+          {pct}% {good ? "✓" : "⚠"}
+        </span>
+      </div>
+      <div className="mt-2 flex gap-3">
+        {dims.map(([label, v]) => (
+          <div key={label} className="flex-1">
+            <div className="mb-0.5 flex justify-between font-mono text-[9.5px] text-faint">
+              <span>{label}</span>
+              <span>{Math.round(v * 100)}</span>
+            </div>
+            <div className="h-1 rounded-full bg-surface2">
+              <div className="h-1 rounded-full" style={{ width: `${v * 100}%`, background: color }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 text-[12px] leading-snug text-muted">{e.critique}</p>
+      {refined && (
+        <p className="mt-1.5 font-mono text-[10.5px] text-accent">
+          ↻ auto-refined from a sub-threshold score using the judge&apos;s feedback
+        </p>
+      )}
+    </motion.div>
+  );
+}
+
+function SystemsPanel({ x }: { x: Integrations }) {
+  const rows: [string, string, boolean][] = [
+    ["Claude", "5 agents reasoned", true],
+    ["Redis Vector", `${x.redisVectorCandidates} precedents retrieved`, x.redisVectorCandidates > 0],
+    ["LangCache", x.langcacheHit ? "cache hit" : "miss → stored", true],
+    ["Agent Memory", x.agentMemory ? "preferences recalled" : "off", x.agentMemory],
+    ["Browserbase", x.browserbaseLive ? "live web signal" : "—", x.browserbaseLive],
+    ["Band", x.bandThreaded ? "approver thread posted" : x.bandRoom ? "room created" : "—", !!x.bandRoom],
+    ["Arize", x.arizeTraced ? "trace exported" : "off", x.arizeTraced],
+  ];
+  return (
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="rounded-xl border border-border bg-surface p-3 shadow-panel">
+      <div className="mb-2 font-mono text-[10.5px] uppercase tracking-wider text-faint">Systems engaged</div>
+      <div className="grid grid-cols-1 gap-1.5">
+        {rows.map(([label, value, active]) => (
+          <div key={label} className="flex items-center justify-between text-[12px]">
+            <span className="flex items-center gap-2">
+              <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: active ? "var(--accent)" : "var(--hairline)" }} />
+              <span className={active ? "text-fg" : "text-faint"}>{label}</span>
+            </span>
+            <span className="font-mono text-[11px] text-muted">{value}</span>
+          </div>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+function IntroCard() {
+  const steps = [
+    "State a pricing-exception ask — type it or click “Speak the ask”.",
+    "Hit Capture — 5 Claude agents reason in the middle column, one at a time.",
+    "The decision joins the precedent graph on the right (it pulses when added).",
+  ];
+  return (
+    <div className="mt-auto rounded-xl border border-border bg-surface p-4 shadow-panel">
+      <div className="font-display text-[13px] font-semibold text-fg">What this is</div>
+      <p className="mt-1 text-[12px] leading-relaxed text-muted">
+        A deal-desk copilot that captures the reasoning behind every exception and turns it into a
+        queryable <span className="text-accent">precedent graph</span>.
+      </p>
+      <ol className="mt-2.5 flex flex-col gap-1.5">
+        {steps.map((s, i) => (
+          <li key={i} className="flex gap-2 text-[12px] leading-snug text-muted">
+            <span className="flex h-4 w-4 flex-none items-center justify-center rounded-full bg-accent-soft font-mono text-[10px] text-accent">
+              {i + 1}
+            </span>
+            <span>{s}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function GraphLegend() {
+  const items: [string, string][] = [
+    ["account", "var(--accent)"],
+    ["approved", "var(--approve)"],
+    ["pending", "var(--pending)"],
+    ["denied", "var(--deny)"],
+  ];
+  return (
+    <div className="pointer-events-none absolute bottom-4 left-5 z-10 flex flex-col gap-1 rounded-lg border border-border bg-surface/80 px-3 py-2 backdrop-blur">
+      <span className="font-mono text-[9.5px] uppercase tracking-wider text-faint">Legend</span>
+      {items.map(([label, c]) => (
+        <span key={label} className="flex items-center gap-1.5 text-[11px] text-muted">
+          <span className="h-2 w-2 rounded-full" style={{ background: c }} /> {label}
+        </span>
+      ))}
+      <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted">
+        <span className="h-0 w-3 border-t border-dashed" style={{ borderColor: "var(--accent)" }} /> cited precedent
+      </span>
+    </div>
   );
 }
