@@ -59,7 +59,18 @@ async function embedVoyage(text: string): Promise<number[]> {
 }
 
 export async function embed(text: string): Promise<number[]> {
-  return env.embeddingsBackend() === "voyage" ? embedVoyage(text) : embedLocal(text);
+  if (env.embeddingsBackend() === "voyage") return embedVoyage(text);
+  try {
+    return await embedLocal(text);
+  } catch (e) {
+    // On serverless the local stack is excluded from the bundle ("Cannot find
+    // package @huggingface/transformers"). Fall back to Voyage if a key exists.
+    if (env.voyageKey()) {
+      console.warn("[embeddings] local backend unavailable; falling back to Voyage:", e);
+      return embedVoyage(text);
+    }
+    throw e;
+  }
 }
 
 /** Pack a float vector into the little-endian Float32 blob RediSearch expects. */

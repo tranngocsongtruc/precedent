@@ -40,7 +40,10 @@ export const env = {
   anthropicKey: () => req("ANTHROPIC_API_KEY"),
   anthropicModel: () => opt("ANTHROPIC_MODEL") ?? "claude-opus-4-8",
 
-  embeddingsBackend: () => opt("EMBEDDINGS_BACKEND") ?? "local",
+  // Explicit setting wins; otherwise prefer Voyage when a key is present (the
+  // serverless case, where the local @huggingface/transformers stack is excluded
+  // from the bundle). Falls back to local only when no Voyage key exists.
+  embeddingsBackend: () => opt("EMBEDDINGS_BACKEND") ?? (opt("VOYAGE_API_KEY") ? "voyage" : "local"),
   voyageKey: () => opt("VOYAGE_API_KEY"),
 
   langcache: () => {
