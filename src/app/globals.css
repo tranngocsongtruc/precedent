@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  background: #0a0a0f;
+  color: #e8e8ef;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* React Flow dark theming */
+.react-flow__edge-path {
+  stroke: #3a3a52;
+}
+.react-flow__edge-text {
+  fill: #8a8aa0;
+  font-size: 10px;
+}
+.react-flow__controls button {
+  background: #13131a;
+  border-color: #26263a;
+  color: #e8e8ef;
+}
+.react-flow__attribution {
+  display: none;
+}

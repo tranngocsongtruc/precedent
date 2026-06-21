@@ -1,0 +1,4 @@
+agentspan
+fastapi
+uvicorn[standard]
+pydantic
