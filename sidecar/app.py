@@ -96,7 +96,16 @@ def _status(handle) -> dict:
 
 @app.get("/health")
 def health():
-    return {"ok": True, "model": MODEL, "engine": "agentspan", "ui": "http://localhost:6767"}
+    # AgentSpan's worker calls the model via litellm using ANTHROPIC_API_KEY from
+    # THIS process's env — if it's missing, runs hang in RUNNING and never reach
+    # the approval pause. Surface it so it's obvious.
+    return {
+        "ok": True,
+        "model": MODEL,
+        "engine": "agentspan",
+        "ui": "http://localhost:6767",
+        "anthropic_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
+    }
 
 
 @app.post("/durable/approval")
